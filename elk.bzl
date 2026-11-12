@@ -424,7 +424,7 @@ def _elk_workspace_aliases(members: dict[str, str], visibility: list[str]):
             visibility = visibility,
         )
 
-def elk_packages(packages: list[Package], platform_tags: dict[str, list[str]], platforms = None, visibility: list[str] = ["PUBLIC"], downloader = native.http_file):
+def elk_packages(packages: list[Package], platform_tags: dict[str, list[str]], platforms = None, visibility: list[str] = ["PUBLIC"], downloader = native.http_file, overrides: dict[str, str] = {}):
     """Create Buck2 targets for every package in *packages*.
 
     For each package the macro creates:
@@ -440,6 +440,14 @@ def elk_packages(packages: list[Package], platform_tags: dict[str, list[str]], p
                    ``get_reindeer_platforms()`` from the prelude.
         visibility: visibility list for the alias targets.
         downloader: http_file compatible downloading rule.
+        overrides: ``{"<package>": "<label>"}``. The package's alias points at
+                   the label instead of elk's ``prebuilt_python_library``.
+                   Keys are alias names (normalised, and versioned when the
+                   lock holds several versions). elk still declares the
+                   package's wheel downloads, so the replacement can build
+                   on the pinned wheel (``:<wheel filename>``), and other
+                   packages' deps on it resolve to the replacement. A
+                   package with no matching wheel can be supplied this way.
     """
     if platforms == None:
         platforms = get_reindeer_platforms()
@@ -467,13 +475,24 @@ def elk_packages(packages: list[Package], platform_tags: dict[str, list[str]], p
     # them are silently dropped rather than referencing non-existent targets.
     known = {}
     for pkg in packages:
+        if _alias_name(pkg) in overrides:
+            known[_alias_name(pkg)] = True
+            continue
         for tags in platform_tags.values():
             if _choose_wheel(pkg.files, tags) != None:
                 known[_alias_name(pkg)] = True
                 break
 
+    # A key that names no package would otherwise be ignored without notice,
+    # leaving elk's generated library in place.
+    all_names = {_alias_name(pkg): True for pkg in packages}
+    for override_name in overrides:
+        if override_name not in all_names:
+            fail("overrides names '{}', which is not a package in the lock (alias names are normalised, and versioned when a package has several versions)".format(override_name))
+
     for pkg in packages:
         pkg_deps = [":{}".format(d) for d in pkg.deps if d in known]
+        override = overrides.get(_alias_name(pkg))
 
         # --- choose wheels per platform ---
         platform_chosen = {}  # platform_name -> WheelFile
@@ -485,7 +504,7 @@ def elk_packages(packages: list[Package], platform_tags: dict[str, list[str]], p
                 platform_chosen[plat_name] = chosen
                 all_chosen[chosen.file] = chosen
 
-        if len(all_chosen) == 0:
+        if len(all_chosen) == 0 and override == None:
             continue
 
         # --- create remote_file + prebuilt_python_library ---
@@ -501,6 +520,8 @@ def elk_packages(packages: list[Package], platform_tags: dict[str, list[str]], p
                 urls = [_wheel_url(wf)],
                 sha256 = sha,
             )
+            if override != None:
+                continue
             bname = filename + "-built"
             native.prebuilt_python_library(
                 name = bname,
@@ -510,7 +531,9 @@ def elk_packages(packages: list[Package], platform_tags: dict[str, list[str]], p
             built[filename] = ":" + bname
 
         # --- alias ---
-        if len(all_chosen) == 1:
+        if override != None:
+            actual = override
+        elif len(all_chosen) == 1:
             actual = built[all_chosen.keys()[0]]
         else:
             actual_map = {}

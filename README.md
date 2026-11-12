@@ -147,6 +147,59 @@ No regeneration step needed. Buck2 reads the updated lock file automatically.
 
 No regeneration step needed. Buck2 reads the updated lock file directly.
 
+## Replacing a package
+
+`overrides` maps a package's target name to a label, and that package's
+alias points at the label instead of the `prebuilt_python_library` elk
+would generate. Other packages that depend on it get the replacement.
+
+```python
+elk_packages(
+    packages = uv_packages(lock),
+    platform_tags = {"linux-x86_64": linux_x86_64_tags},
+    overrides = {
+        "claude-agent-sdk": ":claude-agent-sdk-without-cli",
+    },
+)
+
+# elk still declares the wheel's download, named after the wheel file, so
+# the replacement starts from the version and hash the lock pins.
+genrule(
+    name = "claude-agent-sdk-without-cli.whl",
+    srcs = [":claude_agent_sdk-0.2.82-py3-none-manylinux_2_17_x86_64.whl"],
+    out = "claude_agent_sdk-0.2.82-py3-none-manylinux_2_17_x86_64.whl",
+    cmd = "$(exe :strip_bundled_cli) $SRCS $OUT",
+)
+
+prebuilt_python_library(
+    name = "claude-agent-sdk-without-cli",
+    binary_src = ":claude-agent-sdk-without-cli.whl",
+    deps = uv_deps(lock, "claude-agent-sdk"),
+)
+```
+
+Keys are the names elk gives the alias: normalised, and `{name}-{version}`
+when the lock holds several versions of a package. A key that names no
+package is an error. A package with no wheel for any configured platform
+(an sdist-only package, say) can be supplied this way too.
+
+`example/overrides` replaces one package from source and one by passing its
+pinned wheel through a genrule.
+
+### Wheels that load native libraries
+
+A manylinux wheel's extension modules name `libstdc++.so.6`,
+`libgcc_s.so.1` or `libz.so.1` as needed libraries and expect them from the
+host. Where the host has none at those paths (NixOS, a nix-only container
+image), importing the module fails. Give the Python toolchain the libraries
+instead of patching each wheel: `PythonToolchainInfo.preload_deps` puts them
+in every binary's and test's native-libs directory, on `LD_LIBRARY_PATH` and
+`LD_PRELOAD`, so the wheel loads them unchanged and the libraries are buck
+dependencies. An override is for a fix that has to change the wheel itself,
+such as dropping a bundled executable built for another loader. A per-wheel
+patchelf step is tracked in
+[elk#6](https://github.com/cormacrelf/elk/issues/6).
+
 ## Packaging tags
 
 Python packaging relies on huge lists of tags with which to match a platform

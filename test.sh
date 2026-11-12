@@ -14,4 +14,5 @@ buck2 run //example/poetry:other
 buck2 run //example/uv:main
 buck2 run //example/uv:other
 buck2 run //example/custom_platforms:main
+buck2 run //example/overrides:main
 buck2 run //example/uv_workspace/packages/app-cli:main
